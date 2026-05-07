@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Entornos virtuales
+venv/
+env/
+.venv/
+
+# Streamlit
+.streamlit/
+
+# Imágenes de prueba y reportes generados
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.tiff
+*.tif
+*.pdf
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# Sistema
+.DS_Store
+Thumbs.db
