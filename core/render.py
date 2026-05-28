@@ -17,6 +17,23 @@ ZONE_RGB = {
 ZONE_NORM = {k: tuple(v / 255 for v in c) for k, c in ZONE_RGB.items()}
 
 
+# ── Zone label helpers ────────────────────────────────────────────────────────
+
+def zone_bar_label(z):
+    """
+    Short text label shown inside the zone bar.
+      intact    → I
+      rubble    → R
+      wood      → W
+      fractured → MJ  if mechanical (p_mec > p_nat)
+                  J   if natural    (p_nat >= p_mec)
+    """
+    lbl = z["label"]
+    if lbl == "fractured":
+        return "MJ" if z.get("p_mec", 0) > z.get("p_nat", 0) else "J"
+    return lbl[0].upper()
+
+
 # ── Public helpers ────────────────────────────────────────────────────────────
 
 def render_zone_bar(img_width, zones, bar_height=44):
@@ -164,9 +181,10 @@ def _fig_final_zones(img, zones):
 
     # Label each zone in the bar strip
     for z in zones:
-        cx = (z["x_start"] + z["x_end"]) / 2
-        cy = h + bar_h / 2
-        ax.text(cx, cy, z["label"][0].upper(),
+        cx  = (z["x_start"] + z["x_end"]) / 2
+        cy  = h + bar_h / 2
+        lbl = zone_bar_label(z)
+        ax.text(cx, cy, lbl,
                 ha="center", va="center", fontsize=8,
                 color="white", fontweight="bold")
 
@@ -179,10 +197,12 @@ def _fig_final_zones(img, zones):
 
 def _add_legend(ax):
     patches = [
-        mpatches.Patch(color=ZONE_NORM["intact"],    label="Intact"),
-        mpatches.Patch(color=ZONE_NORM["fractured"], label="Fractured"),
-        mpatches.Patch(color=ZONE_NORM["rubble"],    label="Rubble"),
-        mpatches.Patch(color=ZONE_NORM["wood"],      label="Wood block"),
+        mpatches.Patch(color=ZONE_NORM["intact"],    label="I — Intact"),
+        mpatches.Patch(color=ZONE_NORM["fractured"], label="J — Natural Joint"),
+        mpatches.Patch(color=ZONE_NORM["fractured"], label="MJ — Mechanical Joint",
+                       linestyle="--", linewidth=1.5),
+        mpatches.Patch(color=ZONE_NORM["rubble"],    label="R — Rubble"),
+        mpatches.Patch(color=ZONE_NORM["wood"],      label="W — Wood block"),
     ]
     ax.legend(handles=patches, loc="upper right", fontsize=8,
               framealpha=0.7, handlelength=1.2)
@@ -220,8 +240,9 @@ def render_bar_with_ruler(img_width, zones, row_length_cm=None, bar_height=48):
 
     # Zone labels centred in each band
     for z in zones:
-        cx = (z["x_start"] + z["x_end"]) / 2
-        ax.text(cx, bar_height / 2, z["label"][0].upper(),
+        cx  = (z["x_start"] + z["x_end"]) / 2
+        lbl = zone_bar_label(z)
+        ax.text(cx, bar_height / 2, lbl,
                 ha="center", va="center", fontsize=8,
                 color="white", fontweight="bold", alpha=0.85)
 

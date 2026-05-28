@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Photo Core Editor</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: transparent;
+    color: #fafafa;
+    overflow: hidden;
+  }
+  #wrap { display: flex; flex-direction: column; width: 100%; }
+  #toolbar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px;
+    background: rgba(38, 39, 48, 0.65);
+    border-radius: 8px 8px 0 0;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-bottom: none;
+    flex-wrap: wrap;
+    font-size: 13px;
+  }
+  #toolbar button {
+    background: rgba(255,255,255,0.10);
+    color: #fafafa;
+    border: 0;
+    padding: 7px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: background 0.15s;
+  }
+  #toolbar button:hover { background: rgba(255,255,255,0.18); }
+  #toolbar button.primary { background: #16a34a; color: white; }
+  #toolbar button.primary:hover { background: #15803d; }
+  #toolbar .spacer { flex: 1; }
+  #toolbar .badge {
+    background: rgba(255,255,255,0.08);
+    padding: 5px 10px;
+    border-radius: 5px;
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+  }
+  #toolbar .badge b { color: #ffd400; font-weight: 600; }
+  #canvas-wrap {
+    position: relative;
+    background: #0d0d0d;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+    overflow: hidden;
+  }
+  #canvas {
+    display: block;
+    width: 100%;
+    height: auto;
+    cursor: crosshair;
+    user-select: none;
+  }
+  #help {
+    display: flex; gap: 14px;
+    padding: 8px 14px;
+    font-size: 11px;
+    opacity: 0.7;
+    flex-wrap: wrap;
+  }
+  #help .key {
+    background: rgba(255,255,255,0.08);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-weight: 600;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="toolbar">
+    <button id="apply" class="primary">✓ Aplicar</button>
+    <button id="discard">↩ Descartar</button>
+    <button id="reset">⟲ Auto-detectar</button>
+    <div class="spacer"></div>
+    <span class="badge"><b id="count">0</b> listones</span>
+    <span class="badge" id="status">listo</span>
+  </div>
+  <div id="canvas-wrap"><canvas id="canvas"></canvas></div>
+  <div id="help">
+    <span><span class="key">drag</span> línea: mover</span>
+    <span><span class="key">drag</span> handle ▲ / ▼ de un listón: cambiar grosor</span>
+    <span><span class="key">click</span> vacío: añadir listón</span>
+    <span><span class="key">dblclick</span> línea: borrar</span>
+    <span><span class="key">drag</span> esquinas/bordes verdes: redimensionar caja</span>
+  </div>
+</div>
+
+<script>
+(function () {
+  // ── Streamlit bridge ───────────────────────────────────────────────────────
+  function send(type, data) {
+    window.parent.postMessage({ isStreamlitMessage: true, type, ...data }, "*");
+  }
+  function setReady()   { send("streamlit:componentReady", { apiVersion: 1 }); }
+  function setHeight(h) { send("streamlit:setFrameHeight", { height: h }); }
+  function setValue(v)  { send("streamlit:setComponentValue", { value: v, dataType: "json" }); }
+
+  // ── State ─────────────────────────────────────────────────────────────────
+  let imgW = 0, imgH = 0;
+  let scale = 1;
+  let bgImg = null;
+  let box = null;             // { x1, y1, x2, y2 } in image space
+  let dividers = [];          // [{ y, halfThickness, isNew, markedForDelete }, …]
+  let drag = null;
+  const HIT_LINE = 6;         // tolerance for line/edge hits
+  const HIT_HANDLE = 8;       // handle hit radius
+  const DEFAULT_HALF_THICK = 12;
+
+  const canvas = document.getElementById("canvas");
+  const ctx = canvas.getContext("2d");
+
+  // ── Coord conversion ──────────────────────────────────────────────────────
+  function eventToCanvasXY(e) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) * (canvas.width / rect.width),
+      y: (e.clientY - rect.top)  * (canvas.height / rect.height),
+    };
+  }
+  function canvasToImgXY(xc, yc) { return { x: xc / scale, y: yc / scale }; }
+  function imgToCanvasXY(xi, yi) { return { x: xi * scale, y: yi * scale }; }
+
+  // ── Drawing ───────────────────────────────────────────────────────────────
+  function draw() {
+    if (!bgImg) return;
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    ctx.drawImage(bgImg, 0, 0, W, H);
+
+    if (box) drawBox();
+    for (let i = 0; i < dividers.length; i++) drawDivider(i);
+
+    document.getElementById("count").textContent =
+      dividers.filter(d => !d.markedForDelete).length;
+  }
+
+  function drawBox() {
+    const tl = imgToCanvasXY(box.x1, box.y1);
+    const br = imgToCanvasXY(box.x2, box.y2);
+    ctx.fillStyle = "rgba(34, 197, 94, 0.07)";
+    ctx.fillRect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
+    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = "#22c55e";
+    ctx.setLineDash([]);
+    ctx.strokeRect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
+    drawHandle(tl.x, tl.y, "#22c55e");
+    drawHandle(br.x, tl.y, "#22c55e");
+    drawHandle(tl.x, br.y, "#22c55e");
+    drawHandle(br.x, br.y, "#22c55e");
+    const mx = (tl.x + br.x) / 2, my = (tl.y + br.y) / 2;
+    drawHandle(mx, tl.y, "#22c55e", 5);
+    drawHandle(mx, br.y, "#22c55e", 5);
+    drawHandle(tl.x, my, "#22c55e", 5);
+    drawHandle(br.x, my, "#22c55e", 5);
+  }
+
+  function drawDivider(i) {
+    const d = dividers[i];
+    const x1 = box ? imgToCanvasXY(box.x1, 0).x : 0;
+    const x2 = box ? imgToCanvasXY(box.x2, 0).x : canvas.width;
+    const yc = imgToCanvasXY(0, d.y).y;
+    const halfPx = d.halfThickness * scale;
+
+    // Colors depending on state
+    let colorMain, colorBand;
+    if (d.markedForDelete) {
+      colorMain = "rgba(239, 68, 68, 0.95)";
+      colorBand = "rgba(239, 68, 68, 0.15)";
+    } else if (d.isNew) {
+      colorMain = "rgba(255, 130, 0, 0.95)";
+      colorBand = "rgba(255, 130, 0, 0.15)";
+    } else {
+      colorMain = "rgba(255, 212, 0, 0.95)";
+      colorBand = "rgba(255, 212, 0, 0.18)";
+    }
+
+    // Band (semi-transparent fill of the thickness band)
+    if (halfPx > 0.5) {
+      ctx.fillStyle = colorBand;
+      ctx.fillRect(x1, yc - halfPx, x2 - x1, 2 * halfPx);
+    }
+
+    // Centre line
+    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = colorMain;
+    ctx.setLineDash(d.markedForDelete ? [7, 5] : []);
+    ctx.beginPath();
+    ctx.moveTo(x1, yc);
+    ctx.lineTo(x2, yc);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Thickness handles (▲ / ▼) — small triangles at the band edges
+    if (!d.markedForDelete) {
+      const hx = x1 + 22;
+      drawTriHandle(hx, yc - halfPx, colorMain, "up");
+      drawTriHandle(hx, yc + halfPx, colorMain, "down");
+      // Also at the right side for convenience
+      const hx2 = x2 - 22;
+      drawTriHandle(hx2, yc - halfPx, colorMain, "up");
+      drawTriHandle(hx2, yc + halfPx, colorMain, "down");
+    }
+  }
+
+  function drawHandle(x, y, color, size = 7) {
+    ctx.fillStyle = color;
+    ctx.fillRect(x - size / 2, y - size / 2, size, size);
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x - size / 2, y - size / 2, size, size);
+  }
+  function drawTriHandle(x, y, color, dir) {
+    const s = 6;
+    ctx.fillStyle = color;
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    if (dir === "up") {
+      ctx.moveTo(x - s, y + s/2);
+      ctx.lineTo(x + s, y + s/2);
+      ctx.lineTo(x,     y - s);
+    } else {
+      ctx.moveTo(x - s, y - s/2);
+      ctx.lineTo(x + s, y - s/2);
+      ctx.lineTo(x,     y + s);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  // ── Hit testing ───────────────────────────────────────────────────────────
+  function hitTest(xc, yc) {
+    if (box) {
+      const tl = imgToCanvasXY(box.x1, box.y1);
+      const br = imgToCanvasXY(box.x2, box.y2);
+      if (near(xc, yc, tl.x, tl.y)) return { kind: "box-corner", which: "tl" };
+      if (near(xc, yc, br.x, tl.y)) return { kind: "box-corner", which: "tr" };
+      if (near(xc, yc, tl.x, br.y)) return { kind: "box-corner", which: "bl" };
+      if (near(xc, yc, br.x, br.y)) return { kind: "box-corner", which: "br" };
+      const mx = (tl.x + br.x) / 2, my = (tl.y + br.y) / 2;
+      if (near(xc, yc, mx,    tl.y)) return { kind: "box-edge", which: "top" };
+      if (near(xc, yc, mx,    br.y)) return { kind: "box-edge", which: "bot" };
+      if (near(xc, yc, tl.x,  my))   return { kind: "box-edge", which: "left" };
+      if (near(xc, yc, br.x,  my))   return { kind: "box-edge", which: "right" };
+      // Bare-edge hits (not on handle)
+      const tol = 5;
+      if (xc >= tl.x - tol && xc <= br.x + tol) {
+        if (Math.abs(yc - tl.y) < tol) return { kind: "box-edge", which: "top" };
+        if (Math.abs(yc - br.y) < tol) return { kind: "box-edge", which: "bot" };
+      }
+      if (yc >= tl.y - tol && yc <= br.y + tol) {
+        if (Math.abs(xc - tl.x) < tol) return { kind: "box-edge", which: "left" };
+        if (Math.abs(xc - br.x) < tol) return { kind: "box-edge", which: "right" };
+      }
+    }
+
+    // Divider hits: thickness handles first (more specific), then centre line
+    const x1 = box ? imgToCanvasXY(box.x1, 0).x : 0;
+    const x2 = box ? imgToCanvasXY(box.x2, 0).x : canvas.width;
+    for (let i = 0; i < dividers.length; i++) {
+      const d = dividers[i];
+      if (d.markedForDelete) continue;
+      const yc_d  = imgToCanvasXY(0, d.y).y;
+      const halfPx = d.halfThickness * scale;
+      const handleXs = [x1 + 22, x2 - 22];
+      for (const hx of handleXs) {
+        if (near(xc, yc, hx, yc_d - halfPx, HIT_HANDLE))
+          return { kind: "thickness", idx: i, side: "top" };
+        if (near(xc, yc, hx, yc_d + halfPx, HIT_HANDLE))
+          return { kind: "thickness", idx: i, side: "bot" };
+      }
+    }
+    for (let i = 0; i < dividers.length; i++) {
+      const yc_d = imgToCanvasXY(0, dividers[i].y).y;
+      if (Math.abs(yc - yc_d) < HIT_LINE) return { kind: "divider", idx: i };
+    }
+    return null;
+  }
+
+  function near(ax, ay, bx, by, tol = HIT_LINE) {
+    return Math.abs(ax - bx) <= tol && Math.abs(ay - by) <= tol;
+  }
+
+  function cursorFor(hit) {
+    if (!hit) return "crosshair";
+    if (hit.kind === "box-corner") {
+      return (hit.which === "tl" || hit.which === "br") ? "nwse-resize" : "nesw-resize";
+    }
+    if (hit.kind === "box-edge") {
+      return (hit.which === "top" || hit.which === "bot") ? "ns-resize" : "ew-resize";
+    }
+    if (hit.kind === "divider")   return "ns-resize";
+    if (hit.kind === "thickness") return "row-resize";
+    return "crosshair";
+  }
+
+  // ── Mouse interactions ────────────────────────────────────────────────────
+  canvas.addEventListener("mousedown", (e) => {
+    const { x, y } = eventToCanvasXY(e);
+    const hit = hitTest(x, y);
+    if (!hit) {
+      const ip = canvasToImgXY(x, y);
+      const newY = Math.max(0, Math.min(imgH, Math.round(ip.y)));
+      dividers.push({
+        y: newY,
+        halfThickness: DEFAULT_HALF_THICK,
+        isNew: true,
+        markedForDelete: false,
+      });
+      dividers.sort((a, b) => a.y - b.y);
+      draw();
+      return;
+    }
+    drag = { ...hit, startX: x, startY: y };
+    e.preventDefault();
+  });
+
+  canvas.addEventListener("mousemove", (e) => {
+    const { x, y } = eventToCanvasXY(e);
+    if (!drag) {
+      canvas.style.cursor = cursorFor(hitTest(x, y));
+      return;
+    }
+    const ip = canvasToImgXY(x, y);
+    if (drag.kind === "divider") {
+      dividers[drag.idx].y = Math.max(0, Math.min(imgH, Math.round(ip.y)));
+    } else if (drag.kind === "thickness") {
+      const d = dividers[drag.idx];
+      // Distance from the mouse to the centre line, in image px
+      const dist = Math.abs(ip.y - d.y);
+      d.halfThickness = Math.max(0, Math.min(80, Math.round(dist)));
+    } else if (drag.kind === "box-corner") {
+      if (drag.which.includes("l")) box.x1 = clamp(ip.x, 0, box.x2 - 10);
+      if (drag.which.includes("r")) box.x2 = clamp(ip.x, box.x1 + 10, imgW);
+      if (drag.which.includes("t")) box.y1 = clamp(ip.y, 0, box.y2 - 10);
+      if (drag.which.includes("b")) box.y2 = clamp(ip.y, box.y1 + 10, imgH);
+    } else if (drag.kind === "box-edge") {
+      if (drag.which === "top")    box.y1 = clamp(ip.y, 0,           box.y2 - 10);
+      if (drag.which === "bot")    box.y2 = clamp(ip.y, box.y1 + 10, imgH);
+      if (drag.which === "left")   box.x1 = clamp(ip.x, 0,           box.x2 - 10);
+      if (drag.which === "right")  box.x2 = clamp(ip.x, box.x1 + 10, imgW);
+    }
+    draw();
+  });
+
+  canvas.addEventListener("mouseup",   endDrag);
+  canvas.addEventListener("mouseleave", endDrag);
+  function endDrag() {
+    if (!drag) return;
+    if (drag.kind === "divider") dividers.sort((a, b) => a.y - b.y);
+    drag = null;
+    draw();
+  }
+
+  canvas.addEventListener("dblclick", (e) => {
+    const { x, y } = eventToCanvasXY(e);
+    const hit = hitTest(x, y);
+    if (hit && (hit.kind === "divider" || hit.kind === "thickness")) {
+      const d = dividers[hit.idx];
+      if (d.isNew) dividers.splice(hit.idx, 1);
+      else d.markedForDelete = !d.markedForDelete;
+      draw();
+    }
+  });
+
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+  // ── Buttons ───────────────────────────────────────────────────────────────
+  document.getElementById("apply").addEventListener("click", () => {
+    const kept = dividers.filter(d => !d.markedForDelete);
+    const ys     = kept.map(d => Math.round(d.y));
+    const thicks = kept.map(d => Math.round(d.halfThickness));
+    setValue({
+      action: "apply",
+      box: box ? { x1: Math.round(box.x1), y1: Math.round(box.y1),
+                   x2: Math.round(box.x2), y2: Math.round(box.y2) } : null,
+      dividers: ys,
+      thicknesses: thicks,
+      timestamp: Date.now(),
+    });
+    document.getElementById("status").textContent = "aplicado ✓";
+  });
+  document.getElementById("discard").addEventListener("click", () => {
+    if (lastArgs) renderArgs(lastArgs);
+    document.getElementById("status").textContent = "descartado";
+  });
+  document.getElementById("reset").addEventListener("click", () => {
+    setValue({ action: "reset", timestamp: Date.now() });
+    document.getElementById("status").textContent = "auto…";
+  });
+
+  // ── Layout / sizing ───────────────────────────────────────────────────────
+  function recomputeFrameHeight() {
+    requestAnimationFrame(() => {
+      const total =
+        document.getElementById("toolbar").offsetHeight +
+        document.getElementById("canvas-wrap").offsetHeight +
+        document.getElementById("help").offsetHeight + 4;
+      setHeight(total);
+    });
+  }
+  window.addEventListener("resize", () => {
+    if (!bgImg) return;
+    fitCanvas(); draw(); recomputeFrameHeight();
+  });
+  function fitCanvas() {
+    const containerW = document.getElementById("canvas-wrap").clientWidth;
+    scale = Math.min(1.0, containerW / imgW);
+    canvas.width  = Math.round(imgW * scale);
+    canvas.height = Math.round(imgH * scale);
+    canvas.style.width  = "100%";
+    canvas.style.height = "auto";
+  }
+
+  // ── Receive args from Streamlit ───────────────────────────────────────────
+  let lastArgs = null;
+  function renderArgs(args) {
+    lastArgs = args;
+    imgW = args.image_w;
+    imgH = args.image_h;
+    box = args.box && args.box.x2 > args.box.x1
+        ? { x1: args.box.x1, y1: args.box.y1, x2: args.box.x2, y2: args.box.y2 }
+        : { x1: 0, y1: 0, x2: imgW, y2: imgH };
+    const incomingYs     = args.dividers     || [];
+    const incomingThicks = args.thicknesses  || [];
+    dividers = incomingYs.map((y, i) => ({
+      y,
+      halfThickness: i < incomingThicks.length
+        ? incomingThicks[i] : DEFAULT_HALF_THICK,
+      isNew: false,
+      markedForDelete: false,
+    }));
+    fitCanvas();
+
+    const img = new Image();
+    img.onload = () => {
+      bgImg = img;
+      draw();
+      recomputeFrameHeight();
+    };
+    img.src = args.image_url;
+  }
+
+  window.addEventListener("message", (e) => {
+    if (!e.data || e.data.type !== "streamlit:render") return;
+    renderArgs(e.data.args);
+  });
+
+  setReady();
+})();
+</script>
+</body>
+</html>

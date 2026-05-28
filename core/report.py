@@ -164,8 +164,8 @@ def generate_pdf_report(
 
     # Legend
     legend_tbl = Table(
-        [["🟢 Intacto", "🟡 Fracturado", "🔴 Rubble", "🟫 Madera"]],
-        colWidths=[USABLE_W / 4] * 4,
+        [["🟢 I — Intact", "🟡 J — Natural Joint", "🟡 MJ — Mechanical Joint", "🔴 R — Rubble", "🟫 W — Wood"]],
+        colWidths=[USABLE_W / 5] * 5,
     )
     legend_tbl.setStyle(TableStyle([
         ("ALIGN",    (0, 0), (-1, -1), "CENTER"),
@@ -191,13 +191,19 @@ def generate_pdf_report(
                     else f"{(z['pct_end'] - z['pct_start']) * 100:.1f}%")
 
         if lbl in ("fractured", "rubble") and img_raw is not None:
-            p_nat, p_mec, conf, det = fracture_origin(img_raw, mask, z)
+            if "p_nat" in z:   # precomputed during enrichment step
+                p_nat, p_mec, conf, det = z["p_nat"], z["p_mec"], z["origin_conf"], z["origin_det"]
+            else:
+                p_nat, p_mec, conf, det = fracture_origin(img_raw, mask, z)
             nat_pct  = int(round(p_nat * 100))
             mec_pct  = int(round(p_mec * 100))
             dominant = "Natural" if p_nat >= p_mec else "Mecánica"
-            reason   = (f"óxido {det['oxid_pct']:.1f}%"
-                        if det["oxid_pct"] > 2
-                        else f"brillo {det['mean_v']:.0f}/255")
+            if det and det.get("forced") == "adjacent_to_wood":
+                reason = "adj. maderita"
+            elif det and det.get("oxid_pct", 0) > 2:
+                reason = f"óxido {det['oxid_pct']:.1f}%"
+            else:
+                reason = f"brillo {det['mean_v']:.0f}/255" if det else "—"
             origin_s = f"{dominant} ({nat_pct}%N/{mec_pct}%M) · {reason}"
             conf_s   = conf
         else:

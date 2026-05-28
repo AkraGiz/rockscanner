@@ -13,7 +13,13 @@ env/
 # Streamlit
 .streamlit/
 
-# Imágenes de prueba y reportes generados
+# Photo Cores persistent storage (puede llegar a varios GB)
+data/photocores/
+
+# Logs
+*.log
+
+# Imágenes y reportes — se quedan locales (samples/ puede llegar a varios GB)
 *.jpg
 *.jpeg
 *.png
@@ -21,6 +27,10 @@ env/
 *.tiff
 *.tif
 *.pdf
+
+# Excepción: permite committear imágenes en docs/ (capturas, diagramas)
+!docs/**/*.png
+!docs/**/*.jpg
 
 # IDEs
 .vscode/
